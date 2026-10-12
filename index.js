@@ -7,13 +7,6 @@ const app = express();
 
 const TARGET = 'https://mathsspot.com';
 const TARGET_HOST_PATTERN = /^https?:\/\/(www\.)?mathsspot\.com/i;
-const STRIPPED_RESPONSE_HEADERS = new Set([
-  'content-security-policy',
-  'content-security-policy-report-only',
-  'x-frame-options',
-  'content-length',
-  'content-encoding',
-]);
 const LINK_PREVIEW_BOTS =
   /bot|crawler|spider|facebookexternalhit|embedly|slack|discord|twitter|whatsapp|telegram|linkedin|skype|pinterest|preview/i;
 
@@ -55,7 +48,7 @@ app.use((req, res, next) => {
 // fullscreen (Esc, F11, the page's own exit button) brings it back.
 const COVER_SNIPPET = `
 <style id="ixl-cover-style">
-  html:not(.ixl-fullscreen)::before {
+  html.ixl-top:not(.ixl-fullscreen)::before {
     content: '';
     position: fixed;
     inset: 0;
@@ -63,11 +56,15 @@ const COVER_SNIPPET = `
     cursor: pointer;
     background: #fff url('/ixl.png') top center / cover no-repeat;
   }
-  html:not(.ixl-fullscreen) { overflow: hidden !important; }
+  html.ixl-top:not(.ixl-fullscreen) { overflow: hidden !important; }
 </style>
 <script id="ixl-cover-script">
 (function () {
   var root = document.documentElement;
+
+  // Embedded frames (games, ads) must not get their own cover.
+  if (window.top !== window.self) return;
+  root.classList.add('ixl-top');
 
   function inElementFullscreen() {
     return !!(document.fullscreenElement || document.webkitFullscreenElement);
@@ -75,8 +72,8 @@ const COVER_SNIPPET = `
 
   function inBrowserFullscreen() {
     if (window.matchMedia('(display-mode: fullscreen)').matches) return true;
-  // ChromeOS F4 / F11 fullscreen: the viewport fills the whole screen.
-  return window.innerHeight >= screen.height - 1 && window.innerWidth >= screen.width - 1;
+    // ChromeOS F4 / F11 fullscreen: the viewport fills the whole screen.
+    return window.innerHeight >= screen.height - 1 && window.innerWidth >= screen.width - 1;
   }
 
   function sync() {
@@ -102,12 +99,6 @@ const COVER_SNIPPET = `
     enterFullscreen();
   }, true);
 
-  document.addEventListener('keydown', function (event) {
-    if (event.key === 'Escape' && !inElementFullscreen() && !inBrowserFullscreen()) {
-      root.classList.remove('ixl-fullscreen');
-    }
-  }, true);
-
   document.addEventListener('fullscreenchange', sync);
   document.addEventListener('webkitfullscreenchange', sync);
   window.addEventListener('resize', sync);
@@ -117,7 +108,7 @@ const COVER_SNIPPET = `
 </script>`;
 
 function injectCover(html) {
-  const headOpen = /<head[^>]*>/i;
+  const headOpen = /<head(\s[^>]*)?>/i;
   if (headOpen.test(html)) {
     return html.replace(headOpen, (match) => match + COVER_SNIPPET);
   }
@@ -143,7 +134,7 @@ function forwardHeaders(proxyRes, res, { stripBodyHeaders }) {
     if (key === 'content-security-policy' || key === 'content-security-policy-report-only' || key === 'x-frame-options') {
       continue;
     }
-    if (stripBodyHeaders && (key === 'content-length' || key === 'content-encoding')) continue;
+    if (stripBodyHeaders && (key === 'content-length' || key === 'content-encoding' || key === 'transfer-encoding')) continue;
 
     if (key === 'location') {
       res.setHeader(name, String(value).replace(TARGET_HOST_PATTERN, ''));
