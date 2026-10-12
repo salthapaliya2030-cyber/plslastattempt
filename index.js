@@ -3,10 +3,17 @@ const path = require('path');
 
 const app = express();
 
-app.use('/cover.jpg', express.static(path.join(__dirname, 'public', 'cover.jpg')));
 app.use('/ixl.png', express.static(path.join(__dirname, 'public', 'ixl.png')));
 
-app.get('/', (req, res) => {
+function siteOrigin(req) {
+  const proto = (req.headers['x-forwarded-proto'] || req.protocol || 'https').split(',')[0].trim();
+  const host = req.headers['x-forwarded-host'] || req.headers.host;
+  return `${proto}://${host}`;
+}
+
+app.get('*', (req, res) => {
+  const origin = siteOrigin(req);
+  const cover = `${origin}/ixl.png`;
   res.send(`
     <!doctype html>
     <html>
@@ -18,12 +25,12 @@ app.get('/', (req, res) => {
 
         <meta property="og:title" content="My Site" />
         <meta property="og:description" content="My site description" />
-        <meta property="og:image" content="https://idkwhatdoyouthink.vercel.app/cover.jpg" />
+        <meta property="og:image" content="${cover}" />
         <meta property="og:type" content="website" />
-        <meta property="og:url" content="https://idkwhatdoyouthink.vercel.app" />
+        <meta property="og:url" content="${origin}${req.path}" />
 
         <meta name="twitter:card" content="summary_large_image" />
-        <meta name="twitter:image" content="https://idkwhatdoyouthink.vercel.app/cover.jpg" />
+        <meta name="twitter:image" content="${cover}" />
 
         <style>
           html, body { margin: 0; height: 100%; }
