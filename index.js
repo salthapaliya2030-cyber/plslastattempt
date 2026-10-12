@@ -128,7 +128,7 @@ function decompress(buffer, encoding) {
   }
 }
 
-function forwardHeaders(proxyRes, res, { stripBodyHeaders }) {
+function forwardHeaders(proxyRes, res, req, { stripBodyHeaders }) {
   for (const [name, value] of Object.entries(proxyRes.headers)) {
     const key = name.toLowerCase();
     if (key === 'content-security-policy' || key === 'content-security-policy-report-only' || key === 'x-frame-options') {
@@ -137,7 +137,8 @@ function forwardHeaders(proxyRes, res, { stripBodyHeaders }) {
     if (stripBodyHeaders && (key === 'content-length' || key === 'content-encoding' || key === 'transfer-encoding')) continue;
 
     if (key === 'location') {
-      res.setHeader(name, String(value).replace(TARGET_HOST_PATTERN, ''));
+      const replacement = String(value).replace(TARGET_HOST_PATTERN, siteOrigin(req));
+      res.setHeader(name, replacement);
     } else if (key === 'set-cookie') {
       res.setHeader(name, value.map((cookie) => cookie.replace(/;\s*domain=[^;]+/i, '')));
     } else {
@@ -164,7 +165,7 @@ const proxy = createProxyMiddleware({
     res.statusMessage = proxyRes.statusMessage;
 
     if (!isHtml) {
-      forwardHeaders(proxyRes, res, { stripBodyHeaders: false });
+      forwardHeaders(proxyRes, res, req, { stripBodyHeaders: false });
       proxyRes.pipe(res);
       return;
     }
@@ -178,11 +179,11 @@ const proxy = createProxyMiddleware({
         body = Buffer.from(injectCover(raw.toString('utf8')), 'utf8');
       } catch (error) {
         console.error('Failed to inject cover:', error.message);
-        forwardHeaders(proxyRes, res, { stripBodyHeaders: false });
+        forwardHeaders(proxyRes, res, req, { stripBodyHeaders: false });
         res.end(Buffer.concat(chunks));
         return;
       }
-      forwardHeaders(proxyRes, res, { stripBodyHeaders: true });
+      forwardHeaders(proxyRes, res, req, { stripBodyHeaders: true });
       res.setHeader('content-length', body.length);
       res.end(body);
     });
