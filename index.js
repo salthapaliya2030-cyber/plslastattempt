@@ -66,30 +66,6 @@ const COVER_SNIPPET = `
   if (window.top !== window.self) return;
   root.classList.add('ixl-top');
 
-  var originalOpen = window.open;
-  window.open = function (url, target, features) {
-    if (typeof url === 'string' && /^https?:\/\/(www\.)?mathsspot\.com/i.test(url)) {
-      url = url.replace(/^https?:\/\/(www\.)?mathsspot\.com/i, '');
-    }
-    return originalOpen.call(window, url, target || '_self', features);
-  };
-
-  document.addEventListener('click', function (event) {
-    var target = event.target;
-    if (!target || !target.closest) return;
-    var link = target.closest('a[href]');
-    if (!link) return;
-
-    var href = link.getAttribute('href');
-    if (!href || /^javascript:/i.test(href)) return;
-
-    if (/^https?:\/\/(www\.)?mathsspot\.com/i.test(href)) {
-      event.preventDefault();
-      event.stopPropagation();
-      window.location.href = href.replace(/^https?:\/\/(www\.)?mathsspot\.com/i, '');
-    }
-  }, true);
-
   function inElementFullscreen() {
     return !!(document.fullscreenElement || document.webkitFullscreenElement);
   }
