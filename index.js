@@ -99,6 +99,36 @@ const COVER_SNIPPET = `
     enterFullscreen();
   }, true);
 
+  // Keep navigation on this site: any link or window.open pointing at the
+  // real host is rewritten to the same path on the proxy.
+  var REAL_HOST = /^(www\\.)?mathsspot\\.com$/i;
+  function toProxyUrl(url) {
+    try {
+      var parsed = new URL(url, location.href);
+      if (!REAL_HOST.test(parsed.hostname)) return url;
+      return location.origin + parsed.pathname + parsed.search + parsed.hash;
+    } catch (error) {
+      return url;
+    }
+  }
+
+  document.addEventListener('click', function (event) {
+    var link = event.target && event.target.closest && event.target.closest('a[href]');
+    if (!link) return;
+    var rewritten = toProxyUrl(link.href);
+    if (rewritten !== link.href) {
+      link.href = rewritten;
+      link.removeAttribute('target');
+    }
+  }, true);
+
+  var nativeOpen = window.open;
+  window.open = function (url) {
+    var args = Array.prototype.slice.call(arguments);
+    if (typeof url === 'string') args[0] = toProxyUrl(url);
+    return nativeOpen.apply(window, args);
+  };
+
   document.addEventListener('fullscreenchange', sync);
   document.addEventListener('webkitfullscreenchange', sync);
   window.addEventListener('resize', sync);
@@ -113,6 +143,18 @@ function injectCover(html) {
     return html.replace(headOpen, (match) => match + COVER_SNIPPET);
   }
   return COVER_SNIPPET + html;
+}
+
+const REWRITABLE_TYPES = /text\/html|javascript|json|text\/css|text\/plain|xml/i;
+
+function rewriteHostLinks(text, origin) {
+  const host = origin.replace(/^https?:\/\//, '');
+  const escapedOrigin = origin.replace(/\//g, '\\/');
+  return text
+    .replace(/https?:\/\/(www\.)?mathsspot\.com/gi, origin)
+    .replace(/https?:\\\/\\\/(www\.)?mathsspot\.com/gi, escapedOrigin)
+    .replace(/https?%3A%2F%2F(www\.)?mathsspot\.com/gi, encodeURIComponent(origin))
+    .replace(/(["'(\s])\/\/(www\.)?mathsspot\.com/gi, `$1//${host}`);
 }
 
 function decompress(buffer, encoding) {
@@ -159,11 +201,12 @@ const proxy = createProxyMiddleware({
     proxyReq.removeHeader('via');
   },
   onProxyRes(proxyRes, req, res) {
-    const isHtml = /text\/html/i.test(proxyRes.headers['content-type'] || '');
+    const contentType = proxyRes.headers['content-type'] || '';
+    const isHtml = /text\/html/i.test(contentType);
     res.statusCode = proxyRes.statusCode;
     res.statusMessage = proxyRes.statusMessage;
 
-    if (!isHtml) {
+    if (!REWRITABLE_TYPES.test(contentType)) {
       forwardHeaders(proxyRes, res, { stripBodyHeaders: false });
       proxyRes.pipe(res);
       return;
@@ -175,9 +218,11 @@ const proxy = createProxyMiddleware({
       let body;
       try {
         const raw = decompress(Buffer.concat(chunks), proxyRes.headers['content-encoding']);
-        body = Buffer.from(injectCover(raw.toString('utf8')), 'utf8');
+        let text = rewriteHostLinks(raw.toString('utf8'), siteOrigin(req));
+        if (isHtml) text = injectCover(text);
+        body = Buffer.from(text, 'utf8');
       } catch (error) {
-        console.error('Failed to inject cover:', error.message);
+        console.error('Failed to rewrite response:', error.message);
         forwardHeaders(proxyRes, res, { stripBodyHeaders: false });
         res.end(Buffer.concat(chunks));
         return;
