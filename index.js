@@ -1,21 +1,11 @@
 const express = require('express');
 const path = require('path');
 const zlib = require('zlib');
-const url = require('url');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 
 const app = express();
 
 app.use(express.static(path.join(__dirname, 'public')));
-
-const LINK_PREVIEW_BOTS =
-  /bot|crawler|spider|facebookexternalhit|embedly|slack|discord|twitter|whatsapp|telegram|linkedin|skype|pinterest|preview/i;
-
-function siteOrigin(req) {
-  const proto = (req.headers['x-forwarded-proto'] || req.protocol || 'https').split(',')[0].trim();
-  const host = req.headers['x-forwarded-host'] || req.headers.host;
-  return `${proto}://${host}`;
-}
 
 const COVER_SNIPPET = `
 <style id="ixl-cover-style">
@@ -213,87 +203,84 @@ app.get('/', (req, res) => {
 </html>`);
 });
 
-// Proxy endpoint that takes the site URL as a query parameter
-app.use('/proxy', (req, res, next) => {
-  const encoded = req.query.site;
-  if (!encoded) {
-    return res.status(400).send('No site specified');
-  }
+// Proxy endpoint
+app.use('/proxy', createProxyMiddleware({
+  router: (req) => {
+    const encoded = req.query.site;
+    if (!encoded) {
+      return 'http://localhost:' + (process.env.PORT || 3000);
+    }
 
-  let targetSite;
-  try {
-    targetSite = Buffer.from(encoded, 'base64').toString('utf-8');
-  } catch (e) {
-    return res.status(400).send('Invalid site URL');
-  }
+    let targetSite;
+    try {
+      targetSite = Buffer.from(encoded, 'base64').toString('utf-8');
+      new URL(targetSite);
+    } catch (e) {
+      return 'http://localhost:' + (process.env.PORT || 3000);
+    }
 
-  try {
-    new URL(targetSite);
-  } catch (e) {
-    return res.status(400).send('Invalid URL format');
-  }
+    return targetSite;
+  },
+  changeOrigin: true,
+  secure: false,
+  followRedirects: true,
+  selfHandleResponse: true,
+  onProxyReq(proxyReq) {
+    proxyReq.removeHeader('x-forwarded-for');
+    proxyReq.removeHeader('x-real-ip');
+    proxyReq.removeHeader('via');
+  },
+  onProxyRes(proxyRes, req, res) {
+    const isHtml = /text\/html/i.test(proxyRes.headers['content-type'] || '');
+    res.statusCode = proxyRes.statusCode;
+    res.statusMessage = proxyRes.statusMessage;
 
-  const proxy = createProxyMiddleware({
-    target: targetSite,
-    changeOrigin: true,
-    secure: false,
-    followRedirects: true,
-    selfHandleResponse: true,
-    onProxyReq(proxyReq) {
-      proxyReq.removeHeader('x-forwarded-for');
-      proxyReq.removeHeader('x-real-ip');
-      proxyReq.removeHeader('via');
-    },
-    onProxyRes(proxyRes, req, res) {
-      const isHtml = /text\/html/i.test(proxyRes.headers['content-type'] || '');
-      res.statusCode = proxyRes.statusCode;
-      res.statusMessage = proxyRes.statusMessage;
-
-      if (!isHtml) {
-        for (const [name, value] of Object.entries(proxyRes.headers)) {
-          res.setHeader(name, value);
-        }
-        proxyRes.pipe(res);
-        return;
+    if (!isHtml) {
+      for (const [name, value] of Object.entries(proxyRes.headers)) {
+        const key = name.toLowerCase();
+        if (key === 'content-length' || key === 'content-encoding' || key === 'transfer-encoding') continue;
+        res.setHeader(name, value);
       }
+      proxyRes.pipe(res);
+      return;
+    }
 
-      const chunks = [];
-      proxyRes.on('data', (chunk) => chunks.push(chunk));
-      proxyRes.on('end', () => {
-        let body;
-        try {
-          const raw = decompress(Buffer.concat(chunks), proxyRes.headers['content-encoding']);
-          body = Buffer.from(injectCover(raw.toString('utf8')), 'utf8');
-        } catch (error) {
-          console.error('Failed to inject cover:', error.message);
-          for (const [name, value] of Object.entries(proxyRes.headers)) {
-            res.setHeader(name, value);
-          }
-          res.end(Buffer.concat(chunks));
-          return;
-        }
-
+    const chunks = [];
+    proxyRes.on('data', (chunk) => chunks.push(chunk));
+    proxyRes.on('end', () => {
+      let body;
+      try {
+        const raw = decompress(Buffer.concat(chunks), proxyRes.headers['content-encoding']);
+        body = Buffer.from(injectCover(raw.toString('utf8')), 'utf8');
+      } catch (error) {
+        console.error('Failed to inject cover:', error.message);
         for (const [name, value] of Object.entries(proxyRes.headers)) {
           const key = name.toLowerCase();
           if (key === 'content-length' || key === 'content-encoding' || key === 'transfer-encoding') continue;
           res.setHeader(name, value);
         }
-        res.setHeader('content-length', body.length);
-        res.end(body);
-      });
-      proxyRes.on('error', () => res.end());
-    },
-    onError(error, req, res) {
-      console.error('Proxy error:', error.message);
-      if (res.writeHead && !res.headersSent) {
-        res.writeHead(502, { 'Content-Type': 'text/plain' });
+        res.end(Buffer.concat(chunks));
+        return;
       }
-      res.end('Bad gateway');
-    },
-  });
 
-  proxy(req, res, next);
-});
+      for (const [name, value] of Object.entries(proxyRes.headers)) {
+        const key = name.toLowerCase();
+        if (key === 'content-length' || key === 'content-encoding' || key === 'transfer-encoding') continue;
+        res.setHeader(name, value);
+      }
+      res.setHeader('content-length', body.length);
+      res.end(body);
+    });
+    proxyRes.on('error', () => res.end());
+  },
+  onError(error, req, res) {
+    console.error('Proxy error:', error.message);
+    if (res.writeHead && !res.headersSent) {
+      res.writeHead(502, { 'Content-Type': 'text/plain' });
+    }
+    res.end('Bad gateway');
+  },
+}));
 
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
