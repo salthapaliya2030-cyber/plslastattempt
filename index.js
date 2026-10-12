@@ -1,16 +1,15 @@
 const express = require('express');
 const path = require('path');
 const zlib = require('zlib');
+const url = require('url');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 
 const app = express();
 
-const TARGET = 'https://mathsspot.com';
-const TARGET_HOST_PATTERN = /^https?:\/\/(www\.)?mathsspot\.com/i;
+app.use(express.static(path.join(__dirname, 'public')));
+
 const LINK_PREVIEW_BOTS =
   /bot|crawler|spider|facebookexternalhit|embedly|slack|discord|twitter|whatsapp|telegram|linkedin|skype|pinterest|preview/i;
-
-app.use('/ixl.png', express.static(path.join(__dirname, 'public', 'ixl.png')));
 
 function siteOrigin(req) {
   const proto = (req.headers['x-forwarded-proto'] || req.protocol || 'https').split(',')[0].trim();
@@ -18,34 +17,6 @@ function siteOrigin(req) {
   return `${proto}://${host}`;
 }
 
-// Link-preview crawlers don't run scripts, so they get a tiny page whose
-// social tags point at the IXL cover.
-app.use((req, res, next) => {
-  if (req.method !== 'GET' || !LINK_PREVIEW_BOTS.test(req.headers['user-agent'] || '')) {
-    return next();
-  }
-  const origin = siteOrigin(req);
-  const cover = `${origin}/ixl.png`;
-  res.send(`<!doctype html>
-<html>
-  <head>
-    <meta charset="UTF-8" />
-    <title>IXL | Math, Language Arts, Science, Social Studies, and Spanish</title>
-    <meta property="og:title" content="IXL | Math, Language Arts, Science, Social Studies, and Spanish" />
-    <meta property="og:image" content="${cover}" />
-    <meta property="og:type" content="website" />
-    <meta property="og:url" content="${origin}${req.originalUrl}" />
-    <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:image" content="${cover}" />
-  </head>
-  <body></body>
-</html>`);
-});
-
-// Injected into every proxied HTML page. The cover is a fixed pseudo-element on
-// <html> so it exists before the page body is parsed. It is visible whenever
-// the page is NOT fullscreen; clicking it enters fullscreen, and leaving
-// fullscreen (Esc, F11, the page's own exit button) brings it back.
 const COVER_SNIPPET = `
 <style id="ixl-cover-style">
   html.ixl-top:not(.ixl-fullscreen)::before {
@@ -62,7 +33,6 @@ const COVER_SNIPPET = `
 (function () {
   var root = document.documentElement;
 
-  // Embedded frames (games, ads) must not get their own cover.
   if (window.top !== window.self) return;
   root.classList.add('ixl-top');
 
@@ -72,7 +42,6 @@ const COVER_SNIPPET = `
 
   function inBrowserFullscreen() {
     if (window.matchMedia('(display-mode: fullscreen)').matches) return true;
-    // ChromeOS F4 / F11 fullscreen: the viewport fills the whole screen.
     return window.innerHeight >= screen.height - 1 && window.innerWidth >= screen.width - 1;
   }
 
@@ -128,80 +97,205 @@ function decompress(buffer, encoding) {
   }
 }
 
-function forwardHeaders(proxyRes, res, req, { stripBodyHeaders }) {
-  for (const [name, value] of Object.entries(proxyRes.headers)) {
-    const key = name.toLowerCase();
-    if (key === 'content-security-policy' || key === 'content-security-policy-report-only' || key === 'x-frame-options') {
-      continue;
-    }
-    if (stripBodyHeaders && (key === 'content-length' || key === 'content-encoding' || key === 'transfer-encoding')) continue;
+// Home page with textbox to input any site
+app.get('/', (req, res) => {
+  res.send(`<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Universal Proxy</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      body {
+        font-family: Arial, sans-serif;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        min-height: 100vh;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+      }
+      .container {
+        background: white;
+        padding: 40px;
+        border-radius: 10px;
+        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+        max-width: 600px;
+        width: 90%;
+      }
+      h1 {
+        text-align: center;
+        margin-bottom: 30px;
+        color: #333;
+      }
+      .input-group {
+        display: flex;
+        gap: 10px;
+      }
+      input {
+        flex: 1;
+        padding: 12px 15px;
+        border: 2px solid #ddd;
+        border-radius: 5px;
+        font-size: 16px;
+        transition: border-color 0.3s;
+      }
+      input:focus {
+        outline: none;
+        border-color: #667eea;
+      }
+      button {
+        padding: 12px 30px;
+        background: #667eea;
+        color: white;
+        border: none;
+        border-radius: 5px;
+        font-size: 16px;
+        cursor: pointer;
+        transition: background 0.3s;
+      }
+      button:hover {
+        background: #764ba2;
+      }
+      .info {
+        margin-top: 20px;
+        padding: 15px;
+        background: #f0f0f0;
+        border-radius: 5px;
+        font-size: 14px;
+        color: #666;
+      }
+      .info p {
+        margin: 5px 0;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1>🌐 Universal Proxy</h1>
+      <div class="input-group">
+        <input type="text" id="siteUrl" placeholder="Enter website URL (e.g., yohoho.io, google.com)" />
+        <button onclick="openSite()">Open</button>
+      </div>
+      <div class="info">
+        <p><strong>How to use:</strong></p>
+        <p>✓ Type a website URL in the textbox</p>
+        <p>✓ You can include https:// or just the domain</p>
+        <p>✓ Click the cover to enter fullscreen mode</p>
+      </div>
+    </div>
 
-    if (key === 'location') {
-      const replacement = String(value).replace(TARGET_HOST_PATTERN, siteOrigin(req));
-      res.setHeader(name, replacement);
-    } else if (key === 'set-cookie') {
-      res.setHeader(name, value.map((cookie) => cookie.replace(/;\s*domain=[^;]+/i, '')));
-    } else {
-      res.setHeader(name, value);
-    }
+    <script>
+      function openSite() {
+        let input = document.getElementById('siteUrl').value.trim();
+        if (!input) {
+          alert('Please enter a website URL');
+          return;
+        }
+
+        if (!input.startsWith('http://') && !input.startsWith('https://')) {
+          input = 'https://' + input;
+        }
+
+        const encoded = btoa(input);
+        window.location.href = '/proxy?site=' + encoded;
+      }
+
+      document.getElementById('siteUrl').addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') openSite();
+      });
+    </script>
+  </body>
+</html>`);
+});
+
+// Proxy endpoint that takes the site URL as a query parameter
+app.use('/proxy', (req, res, next) => {
+  const encoded = req.query.site;
+  if (!encoded) {
+    return res.status(400).send('No site specified');
   }
-}
 
-const proxy = createProxyMiddleware({
-  target: TARGET,
-  changeOrigin: true,
-  secure: true,
-  ws: true,
-  selfHandleResponse: true,
-  logLevel: 'warn',
-  onProxyReq(proxyReq) {
-    proxyReq.removeHeader('x-forwarded-for');
-    proxyReq.removeHeader('x-real-ip');
-    proxyReq.removeHeader('via');
-  },
-  onProxyRes(proxyRes, req, res) {
-    const isHtml = /text\/html/i.test(proxyRes.headers['content-type'] || '');
-    res.statusCode = proxyRes.statusCode;
-    res.statusMessage = proxyRes.statusMessage;
+  let targetSite;
+  try {
+    targetSite = Buffer.from(encoded, 'base64').toString('utf-8');
+  } catch (e) {
+    return res.status(400).send('Invalid site URL');
+  }
 
-    if (!isHtml) {
-      forwardHeaders(proxyRes, res, req, { stripBodyHeaders: false });
-      proxyRes.pipe(res);
-      return;
-    }
+  try {
+    new URL(targetSite);
+  } catch (e) {
+    return res.status(400).send('Invalid URL format');
+  }
 
-    const chunks = [];
-    proxyRes.on('data', (chunk) => chunks.push(chunk));
-    proxyRes.on('end', () => {
-      let body;
-      try {
-        const raw = decompress(Buffer.concat(chunks), proxyRes.headers['content-encoding']);
-        body = Buffer.from(injectCover(raw.toString('utf8')), 'utf8');
-      } catch (error) {
-        console.error('Failed to inject cover:', error.message);
-        forwardHeaders(proxyRes, res, req, { stripBodyHeaders: false });
-        res.end(Buffer.concat(chunks));
+  const proxy = createProxyMiddleware({
+    target: targetSite,
+    changeOrigin: true,
+    secure: false,
+    followRedirects: true,
+    selfHandleResponse: true,
+    onProxyReq(proxyReq) {
+      proxyReq.removeHeader('x-forwarded-for');
+      proxyReq.removeHeader('x-real-ip');
+      proxyReq.removeHeader('via');
+    },
+    onProxyRes(proxyRes, req, res) {
+      const isHtml = /text\/html/i.test(proxyRes.headers['content-type'] || '');
+      res.statusCode = proxyRes.statusCode;
+      res.statusMessage = proxyRes.statusMessage;
+
+      if (!isHtml) {
+        for (const [name, value] of Object.entries(proxyRes.headers)) {
+          res.setHeader(name, value);
+        }
+        proxyRes.pipe(res);
         return;
       }
-      forwardHeaders(proxyRes, res, req, { stripBodyHeaders: true });
-      res.setHeader('content-length', body.length);
-      res.end(body);
-    });
-    proxyRes.on('error', () => res.end());
-  },
-  onError(error, req, res) {
-    console.error('Proxy error:', error.message);
-    if (res.writeHead && !res.headersSent) {
-      res.writeHead(502, { 'Content-Type': 'text/plain' });
-    }
-    res.end('Bad gateway');
-  },
-});
 
-app.use('/', proxy);
+      const chunks = [];
+      proxyRes.on('data', (chunk) => chunks.push(chunk));
+      proxyRes.on('end', () => {
+        let body;
+        try {
+          const raw = decompress(Buffer.concat(chunks), proxyRes.headers['content-encoding']);
+          body = Buffer.from(injectCover(raw.toString('utf8')), 'utf8');
+        } catch (error) {
+          console.error('Failed to inject cover:', error.message);
+          for (const [name, value] of Object.entries(proxyRes.headers)) {
+            res.setHeader(name, value);
+          }
+          res.end(Buffer.concat(chunks));
+          return;
+        }
+
+        for (const [name, value] of Object.entries(proxyRes.headers)) {
+          const key = name.toLowerCase();
+          if (key === 'content-length' || key === 'content-encoding' || key === 'transfer-encoding') continue;
+          res.setHeader(name, value);
+        }
+        res.setHeader('content-length', body.length);
+        res.end(body);
+      });
+      proxyRes.on('error', () => res.end());
+    },
+    onError(error, req, res) {
+      console.error('Proxy error:', error.message);
+      if (res.writeHead && !res.headersSent) {
+        res.writeHead(502, { 'Content-Type': 'text/plain' });
+      }
+      res.end('Bad gateway');
+    },
+  });
+
+  proxy(req, res, next);
+});
 
 const port = process.env.PORT || 3000;
-const server = app.listen(port, () => {
-  console.log(`Server running on port ${port}`);
+app.listen(port, () => {
+  console.log(`Proxy server running on port ${port}`);
 });
-server.on('upgrade', proxy.upgrade);
